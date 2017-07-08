@@ -1,0 +1,17 @@
+*.log
+*.tlog
+*.obj
+*.idb
+*.pdb
+*.opensdf
+*.suo
+*.sdf
+*.exe
+*.lastbuildstate
+*.ilk
+*.out
+*.vcxproj.filters
+*.vcxproj.user
+*.unsuccessfulbuild
+
+haskell/dist/
