@@ -5,7 +5,6 @@ var StringPool = (function () {
 	var PooledString = function (c, parent) {
 		this._c = c;
 		this._relatives = [parent]; // [0] => parent ; [N > 0] => child
-		this._active = false;
 	};
 
 	PooledString.prototype._descend = function (c) {
@@ -53,7 +52,6 @@ var StringPool = (function () {
 		if (curr._relatives[0] === this._root) {
 			curr._relatives[0] = null; // Not strictly needed, but this is an optimization for toString().
 		}
-		curr._active = true;
 		return curr;
 	};
 
