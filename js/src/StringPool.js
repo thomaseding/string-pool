@@ -221,8 +221,8 @@ var StringPool = (function () {
 	StringPool.prototype.insert = function (str) {
 		var encoded = encodeURIComponent(str);
 		var pNode = this._pRoot;
-		for (var i = 0; i < str.length; ++i) {
-			var c = str.charAt(i);
+		for (var i = 0; i < encoded.length; ++i) {
+			var c = encoded.charAt(i);
 			pNode = this._descend(pNode, c);
 		}
 
