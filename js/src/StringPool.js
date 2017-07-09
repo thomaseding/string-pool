@@ -97,39 +97,47 @@ var StringPool = (function () {
 	};
 
 	var Member = function (offset, type) {
+		if (!(type instanceof Type)) {
+			throw Error();
+		}
 		this.offset = offset;
 		this.type = type;
 	};
 
-	var Type = {
-		U8 = 0,
-		U32 = 1,
+	var Type = function (name, sizeof) {
+		this.sizeof = sizeof;
+		this.name = name;
 	};
 
-	Type.getStride = function (type) {
-		switch (type) {
-			case 0: return 1;
-			case 1: return 4;
-		}
+	var NativeType = function (name, sizeof) {
+		Type.call(this, name, sizeof);
+		this.viewGet = "get" + name;
+		this.viewSet = "set" + name;
 	};
 
-	Type.getName = function (type) {
-		switch (type) {
-			case 0: return "Uint8";
-			case 1: return "Uint32";
-		}
+	NativeType.prototype = new Type();
+	NativeType.prototype.constructor = NativeType;
+	
+	NativeType.U8 = new NativeType("Uint8", 1);
+	NativeType.U32 = new NativeType("Uint32", 4);
+
+	var StructType = function (clazz, name, sizeof) {
+		Type.call(this, name, sizeof);
+		this.clazz = clazz;
 	};
 
-	var NativeMember = function (offset, typeName) {
-		this.offset = offset;
-		this.getType = "get" + typeName;
-		this.setType = "set" + typeName;
+	StructType.prototype = new Type();
+	StructType.prototype.constructor = StructType;
+	
+	var ListType = function (clazz, elemType, count) {
+		var name = elemType.name + "_" + count;
+		var sizeof = elemType.sizeof * count;
+		Type.call(this, name, sizeof);
+		this.clazz = clazz;
 	};
 
-	var StructMember = function (offset, structClass) {
-		this.offset = offset;
-		this.structClass = structClass;
-	};
+	ListType.prototype = new Type();
+	ListType.prototype.constructor = ListType;
 
 	var StructInfo = function (memberNameToType) {
 		var offset = 0;
@@ -139,18 +147,11 @@ var StringPool = (function () {
 			var memberName = memberNames[i];
 			var type = memberNameToType[memberName];
 
-			if (typeof type === "number") {
-				var typeName = Type.getName(type);
-				this[memberName] = new NativeMember(offset, typeName);
-				offset += Type.getStride(type);
-			}
-			else {
-				this[memberName] = new StructMember(offset, type);
-				offset += type.SIZEOF;
-			}
+			this[memberName] = new Member(offset, type.name);
+			offset += type.sizeof;
 		}
 
-		this.SIZEOF = offset;
+		this.sizeof = offset;
 	};
 
 	var createStructClass = function (memberNameToType) {
@@ -160,7 +161,8 @@ var StringPool = (function () {
 			this._memory = memory;
 		};
 
-		Struct.SIZEOF = structInfo.SIZEOF;
+		Struct.prototype = new StructType(structInfo.sizeof);
+		Struct.prototype.constructor = Struct;
 
 		var memberNames = Object.keys(structInfo);
 
@@ -168,20 +170,31 @@ var StringPool = (function () {
 			var memberName = memberNames[i];
 			var member = structInfo[memberName];
 
-			if (member instanceof NativeMember) {
-				Struct.prototype["get" + memberName] = function () {
-					return this._memory.view(member.offset)[member.getType]();
-				};
-
-				Struct.prototype["set" + memberName] = function (value) {
-					this._memory.view(member.offset)[member.setType](value);
-				};
+			if (member.type.constructor === NativeType) {
+				Struct.prototype[memberName] = (function (member) {
+					return function () {
+						var view = this._memory.view(member.offset);
+						return {
+							get: function () {
+								return view[member.type.viewGet]();
+							},
+							set: function (value) {
+								view[member.type.viewSet](value);
+							},
+						};
+					};
+				})(member);
 			}
-			else if (member instanceof StructInfo) {
-				Struct.prototype[memberName] = function () {
-					var structMemory = this._memory.atOffset(member.offset);
-					return new member.structClass(structMemory);
-				};
+			else if (member.type.constructor === StructType || member.type.constructor === ListType) {
+				Struct.prototype[memberName] = (function (member) {
+					return function () {
+						var memory = this._memory.atOffset(member.offset);
+						return new member.type.clazz(memory);
+					};
+				})(member);
+			}
+			else {
+				throw Error();
 			}
 		}
 
@@ -189,34 +202,32 @@ var StringPool = (function () {
 	};
 
 	var createListClass = function (type, typeName/*if type is not native*/) {
-		var Instance = function (memory) {
+		var List = function (memory) {
 			this._memory = memory;
 		};
 
-		if (typeof type === "number") {
-			var stride = Type.getStride(type);
-			var typeName = Type.getName(type);
+		if (type.constructor === NativeType) {
+			var memory = this._memory;
 
-			var getType = "get" + typeName;
-			var setType = "set" + typeName;
-
-			Instance.prototype.get = function (index) {
-				var offset = index * stride;
-				return this._memory.view(offset)[getType]();
+			List.prototype.get = function (index) {
+				var offset = index * type.stride;
+				return memory.view(offset)[type.viewGet]();
 			};
 
-			Instance.prototype.set = function (index, value) {
-				var offset = index * stride;
-				this._memory.view(offset)[setType](value);
+			List.prototype.set = function (index, value) {
+				var offset = index * type.stride;
+				memory.view(offset)[type.viewSet](value);
 			};
 		}
 		else {
-			Instance.prototype.at = function (index) {
-				var offset = type.SIZEOF * index;
+			List.prototype.at = function (index) {
+				var offset = type.sizeof * index;
 				var structMemory = this._memory.atOffset(index);
-				return new type(structMemory);
+				return new type.clazz(structMemory);
 			};
 		}
+
+		return List;
 	};
 
 	var U32List = createListClass(Type.U32);
@@ -236,11 +247,12 @@ var StringPool = (function () {
 	StringPool.prototype._allocateNode = function (c, pParent, kidCapacity) {
 		var kidByteCapacity = 4 * kidCapacity;
 
-		var pNode = this._allocator.allocate(Node.SIZEOF);
+		var pNode = this._allocator.allocate(Node.sizeof);
 		var pKids = this._allocator.allocate(kidByteCapacity); // Allocated after pNode to guarantee its pointer (!== 0).
 
 		var node = this._allocator.dereference(pNode, Node);
 
+		node.aciiChar().set(c);
 		node.setAciiChar(c);
 		node.setParentPtr(pParent);
 		node.setKidCapacity(kidCapacity);
