@@ -133,7 +133,7 @@ var StringPool = (function () {
 	StructType.prototype.constructor = StructType;
 	
 	var ListType = function (clazz, elemType, count) {
-		var name = elemType.name + "_" + (count < 0 ? "U" : count);
+		var name = elemType.name + "_" + (count < 0 ? "Z" : count);
 		var sizeof = elemType.sizeof * count;
 		Type.call(this, name, sizeof);
 		this.clazz = clazz;
@@ -251,7 +251,7 @@ var StringPool = (function () {
 		return type;
 	};
 
-	var U32List = createListClass(Type.U32);
+	var U32List = createListClass(Uint32);
 
 	var Node = createStructClass("Node", {
 		asciiChar: Uint8,
