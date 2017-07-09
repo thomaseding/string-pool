@@ -322,7 +322,6 @@ var StringPool = (function () {
 
 		var node = this._allocator.dereference(pNode, Node);
 
-		var pParent = node.getParentPtr();
 		if (node.getParentPtr() === this._pRoot) {
 			node.setParentPtr(0); // Not strictly needed, but this is an optimization for getString().
 		}
