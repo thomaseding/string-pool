@@ -31,6 +31,10 @@ var StringPool = (function () {
 		return new DataView(this._buffer, this._offset + offset);
 	};
 
+	Memory.prototype.atOffset = function (offset) {
+		return new Memory(buffer, this._offset + offset);
+	};
+
 	var LinearAllocator = function (capacity) {
 		this._buffer = new ArrayBuffer(capacity);
 		this._p = 0;
@@ -116,74 +120,103 @@ var StringPool = (function () {
 		}
 	};
 
-	var MetaMember = function (offset, typeName) {
+	var NativeMember = function (offset, typeName) {
 		this.offset = offset;
 		this.getType = "get" + typeName;
 		this.setType = "set" + typeName;
 	};
 
-	var MetaStruct = function (memberNameToType) {
+	var StructMember = function (offset, structClass) {
+		this.offset = offset;
+		this.structClass = structClass;
+	};
+
+	var StructInfo = function (memberNameToType) {
 		var offset = 0;
 		var memberName = Object.keys(obj);
 
 		for (var i = 0; i < memberNames.length; ++i) {
 			var memberName = memberNames[i];
 			var type = memberNameToType[memberName];
-			var typeName = Type.getName(type);
 
-			this[memberName] = new MetaMember(offset, typeName);
-
-			offset += Type.getStride(type);
+			if (typeof type === "number") {
+				var typeName = Type.getName(type);
+				this[memberName] = new NativeMember(offset, typeName);
+				offset += Type.getStride(type);
+			}
+			else {
+				this[memberName] = new StructMember(offset, type);
+				offset += type.SIZEOF;
+			}
 		}
 
 		this.SIZEOF = offset;
 	};
 
 	var createStructClass = function (memberNameToType) {
-		var metaStruct = new MetaStruct(memberNameToType);
+		var structInfo = new StructInfo(memberNameToType);
 
-		var Instance = function (memory) {
+		var Struct = function (memory) {
 			this._memory = memory;
 		};
 
-		Instance.SIZEOF = metaStruct.SIZEOF;
+		Struct.SIZEOF = structInfo.SIZEOF;
 
-		var memberNames = Object.keys(metaStruct);
+		var memberNames = Object.keys(structInfo);
 
 		for (var i = 0; i < memberNames.length; ++i) {
 			var memberName = memberNames[i];
-			var member = metaStruct[memberName];
+			var member = structInfo[memberName];
 
-			Instance.prototype["get" + memberName] = function () {
-				return this._memory.view(member.offset)[member.getType]();
-			};
+			if (member instanceof NativeMember) {
+				Struct.prototype["get" + memberName] = function () {
+					return this._memory.view(member.offset)[member.getType]();
+				};
 
-			Instance.prototype["set" + memberName] = function (value) {
-				this._memory.view(member.offset)[member.setType](value);
-			};
+				Struct.prototype["set" + memberName] = function (value) {
+					this._memory.view(member.offset)[member.setType](value);
+				};
+			}
+			else if (member instanceof StructInfo) {
+				Struct.prototype[memberName] = function () {
+					var structMemory = this._memory.atOffset(member.offset);
+					return new member.structClass(structMemory);
+				};
+			}
 		}
 
-		return Instance;
+		return Struct;
 	};
 
-	var createListClass = function (type) {
+	var createListClass = function (type, typeName/*if type is not native*/) {
 		var Instance = function (memory) {
 			this._memory = memory;
 		};
 
-		var stride = Type.getStride(type);
-		var typeName = Type.getName(type);
+		if (typeof type === "number") {
+			var stride = Type.getStride(type);
+			var typeName = Type.getName(type);
 
-		var getType = "get" + typeName;
-		var setType = "set" + typeName;
+			var getType = "get" + typeName;
+			var setType = "set" + typeName;
 
-		Instance.prototype.get = function (index) {
-			return this._memory.view(index * stride)[getType]();
-		};
+			Instance.prototype.get = function (index) {
+				var offset = index * stride;
+				return this._memory.view(offset)[getType]();
+			};
 
-		Instance.prototype.set = function (index, value) {
-			this._memory.view(index * stride)[setType](value);
-		};
+			Instance.prototype.set = function (index, value) {
+				var offset = index * stride;
+				this._memory.view(offset)[setType](value);
+			};
+		}
+		else {
+			Instance.prototype.at = function (index) {
+				var offset = type.SIZEOF * index;
+				var structMemory = this._memory.atOffset(index);
+				return new type(structMemory);
+			};
+		}
 	};
 
 	var U32List = createListClass(Type.U32);
