@@ -105,6 +105,9 @@ var StringPool = (function () {
 	};
 
 	var Type = function (name, sizeof) {
+		if (sizeof < 0) {
+			sizeof = -1;
+		}
 		this.sizeof = sizeof;
 		this.name = name;
 	};
@@ -118,8 +121,8 @@ var StringPool = (function () {
 	NativeType.prototype = new Type();
 	NativeType.prototype.constructor = NativeType;
 	
-	NativeType.U8 = new NativeType("Uint8", 1);
-	NativeType.U32 = new NativeType("Uint32", 4);
+	var Uint8 = new NativeType("Uint8", 1);
+	var Uint32 = new NativeType("Uint32", 4);
 
 	var StructType = function (clazz, name, sizeof) {
 		Type.call(this, name, sizeof);
@@ -130,7 +133,7 @@ var StringPool = (function () {
 	StructType.prototype.constructor = StructType;
 	
 	var ListType = function (clazz, elemType, count) {
-		var name = elemType.name + "_" + count;
+		var name = elemType.name + "_" + (count < 0 ? "U" : count);
 		var sizeof = elemType.sizeof * count;
 		Type.call(this, name, sizeof);
 		this.clazz = clazz;
@@ -146,6 +149,9 @@ var StringPool = (function () {
 		for (var i = 0; i < memberNames.length; ++i) {
 			var memberName = memberNames[i];
 			var type = memberNameToType[memberName];
+			if (!(type instanceof Type) || type.sizeof < 0) {
+				throw Error();
+			}
 
 			this[memberName] = new Member(offset, type.name);
 			offset += type.sizeof;
@@ -154,15 +160,14 @@ var StringPool = (function () {
 		this.sizeof = offset;
 	};
 
-	var createStructClass = function (memberNameToType) {
+	var createStructType = function (name, memberNameToType) {
 		var structInfo = new StructInfo(memberNameToType);
 
-		var Struct = function (memory) {
+		var Class = function (memory) {
 			this._memory = memory;
 		};
 
-		Struct.prototype = new StructType(structInfo.sizeof);
-		Struct.prototype.constructor = Struct;
+		var type = new StructType(Class, structInfo.sizeof, name);
 
 		var memberNames = Object.keys(structInfo);
 
@@ -171,7 +176,7 @@ var StringPool = (function () {
 			var member = structInfo[memberName];
 
 			if (member.type.constructor === NativeType) {
-				Struct.prototype[memberName] = (function (member) {
+				Class.prototype[memberName] = (function (member) {
 					return function () {
 						var view = this._memory.view(member.offset);
 						return {
@@ -186,7 +191,7 @@ var StringPool = (function () {
 				})(member);
 			}
 			else if (member.type.constructor === StructType || member.type.constructor === ListType) {
-				Struct.prototype[memberName] = (function (member) {
+				Class.prototype[memberName] = (function (member) {
 					return function () {
 						var memory = this._memory.atOffset(member.offset);
 						return new member.type.clazz(memory);
@@ -198,17 +203,23 @@ var StringPool = (function () {
 			}
 		}
 
-		return Struct;
+		return type;
 	};
 
-	var createListClass = function (type, typeName/*if type is not native*/) {
-		var List = function (memory) {
+	var createListClass = function (elemType, compileTimeCount) {
+		if (compileTimeCount === undefined) {
+			compileTimeCount = -1;
+		}
+		
+		var Class = function (memory) {
 			this._memory = memory;
 		};
 
-		if (type.constructor === NativeType) {
-			List.prototype.at = function (index) {
-				var offset = type.sizeof * index;
+		var type = new ListType(Class, elemType, compileTimeCount);
+
+		if (elemType.constructor === NativeType) {
+			Class.prototype.at = function (index) {
+				var offset = elemType.sizeof * index;
 				var view = this._memory.view(offset);
 				return {
 					get: function () {
@@ -223,9 +234,12 @@ var StringPool = (function () {
 			};
 
 		}
-		else if (type.constructor === StructType || type.constructor === ListType) {
-			List.prototype.at = function (index) {
-				var offset = type.sizeof * index;
+		else if (elemType.constructor === StructType || elemType.constructor === ListType) {
+			if (elemType.sizeof < 0) {
+				throw Error();
+			}
+			Class.prototype.at = function (index) {
+				var offset = elemType.sizeof * index;
 				var subMemory = this._memory.atOffset(index);
 				return new type.clazz(subMemory);
 			};
@@ -234,46 +248,56 @@ var StringPool = (function () {
 			throw Error();
 		}
 
-		return List;
+		return type;
 	};
 
 	var U32List = createListClass(Type.U32);
 
-	var Node = createStructClass({
-		asciiChar: Type.U8,
-		parentPtr: Type.U32,
-		kidCapacity: Type.U32,
-		kidsPtr: Type.U32,
+	var Node = createStructClass("Node", {
+		asciiChar: Uint8,
+		parentPtr: Uint32,
+		kidCapacity: Uint32,
+		kidsPtr: Uint32,
 	});
 
 	var StringPool = function () {
 		this._allocator = new BufferedAllocator();
-		this._pRoot = this._allocateNode(0, 0, 128);
+		this._pRoot = this._createNode(0, 0, 128);
 	};
 
-	StringPool.prototype._allocateNode = function (c, pParent, kidCapacity) {
+	StringPool.prototype._allocate = function (byteCount) {
+		return this._allocator.allocate(byteCount);
+	};
+
+	StringPool.prototype._dereference = function (p, clazz) {
+		return this._allocator.dereference(p, clazz);
+	};
+
+	StringPool.prototype._createNode = function (c, pParent, kidCapacity) {
 		var kidByteCapacity = 4 * kidCapacity;
 
-		var pNode = this._allocator.allocate(Node.sizeof);
-		var pKids = this._allocator.allocate(kidByteCapacity); // Allocated after pNode to guarantee its pointer (!== 0).
+		var pNode = this._allocate(Node.sizeof);
+		var pKids = this._allocate(kidByteCapacity); // Intentionally allocated after pNode to guarantee its pointer (!== 0).
 
-		var node = this._allocator.dereference(pNode, Node);
+		var node = this._dereference(pNode, Node);
 
 		node.aciiChar().set(c);
-		node.parentPtr.set(pParent);
-		node.kidCapacity.set(kidCapacity);
-		node.kidsPtr.set(pKids);
+		node.parentPtr().set(pParent);
+		node.kidCapacity().set(kidCapacity);
+		node.kidsPtr().set(pKids);
 
-		var kids = this._allocator.dereference(pKids, U32List);
+		var kids = this._dereference(pKids, U32List);
 		for (var i = 0; i < kidCapacity; ++i) {
-			kids.set(i, 0);
+			kids.at(i).set(0);
 		}
+
+		return pNode;
 	};
 
 	StringPool.prototype._kidsSize = function (node, kids) {
-		var kids = this._allocator.dereference(pKids, U32List);
+		var kids = this._dereference(pKids, U32List);
 
-		var kidCapacity = node.getKidCapacity();
+		var kidCapacity = node.kidCapacity().get();
 
 		var prevLower = 0;
 		var lower = 0;
@@ -282,7 +306,7 @@ var StringPool = (function () {
 		while (lower < upper) {
 			var dist = upper - lower;
 			var pivot = lower + Math.floor(dist / 2);
-			var pKid = kids.get(pivot);
+			var pKid = kids.at(pivot).get();
 			if (pKid === 0) {
 				upper = pivot;
 			}
@@ -296,8 +320,9 @@ var StringPool = (function () {
 	};
 
 	StringPool.prototype._descend = function (pNode, c) {
-		var node = this._allocator.dereference(pNode, Node);
-		var kids = this._allocator.dereference(node.getKidsPtr(), U32List);
+		var node = this._dereference(pNode, Node);
+		var kidsPtr = node.kidsPtr();
+		var kids = this._dereference(kidsPtr.get(), U32List);
 
 		var kidsSize = this._kidsSize(node, kids);
 
@@ -306,9 +331,9 @@ var StringPool = (function () {
 		while (lower < upper) {
 			var dist = upper - lower;
 			var pivot = lower + Math.floor(dist / 2);
-			var pKid = kids.get(pivot);
-			var kid = this._allocator.dereference(pKid, Node);
-			var k = kid.getAsciiChar();
+			var pKid = kids.at(pivot).get();
+			var kid = this._dereference(pKid, Node);
+			var k = kid.asciiChar().get();
 			if (c < k) {
 				upper = pivot;
 			}
@@ -320,30 +345,32 @@ var StringPool = (function () {
 			}
 		}
 
-		var kidCapacity = node.getKidCapacity();
+		var kidCapacity = node.kidCapacity().get();
 		if (kidSize >= kidCapacity) {
 			var newCapacity = 2 * kidCapacity;
 			var newByteCapacity = 4 * newCapacity;
 
-			var pNewKids = this._allocator.allocate(newByteCapacity);
-			var newKids = this._allocator.dereference(pNewKids, U32List);
+			var pNewKids = this._allocate(newByteCapacity);
+			var newKids = this._dereference(pNewKids, U32List);
 
 			for (var i = 0; i < kidCapacity; ++i) {
-				newKids.set(i, kids.get(i));
+				var p = kids.at(i).get();
+				newKids.at(i).set(p);
 			}
 			for (var i = kidCapacity; offset < newCapacity; ++i) {
-				kids.set(i, 0);
+				kids.at(i).set(0);
 			}
 
 			kids = newKids;
-			node.setKidsPtr(pNewKids);
+			kidsPtr.set(pNewKids);
 		}
 
-		var pKid = this._allocateNode(c, pNode, 4);
+		var pKid = this._createNode(c, pNode, 4);
 		for (var i = kidsSize - 1; i >= lower; --i) {
-			kids.set(i + 1, kids.get(i));
+			var p = kids.at(i).get();
+			kids.at(i + 1).set(p);
 		}
-		kids.set(lower, pKid);
+		kids.at(lower).set(pKid);
 
 		return pKid;
 	};
@@ -352,10 +379,10 @@ var StringPool = (function () {
 		var cs = [];
 
 		do {
-			var node = this._allocator.dereference(pNode, Node);
-			var c = String.fromCharCode(node.getAsciiChar());
+			var node = this._dereference(pNode, Node);
+			var c = String.fromCharCode(node.asciiChar().get());
 			cs.push(c);
-			pNode = node.getParentPtr();
+			pNode = node.parentPtr().get();
 		} while (pNode !== 0);
 
 		var encoded = cs.reverse().join("");
@@ -371,10 +398,11 @@ var StringPool = (function () {
 			pNode = this._descend(pNode, c);
 		}
 
-		var node = this._allocator.dereference(pNode, Node);
+		var node = this._dereference(pNode, Node);
 
-		if (node.getParentPtr() === this._pRoot) {
-			node.setParentPtr(0); // Not strictly needed, but this is an optimization for getString().
+		var parentPtr = node.getParentPtr();
+		if (parentPtr.get() === this._pRoot) {
+			parentPtr.set(0); // Not strictly needed, but this is an optimization for getString().
 		}
 
 		return pNode;
