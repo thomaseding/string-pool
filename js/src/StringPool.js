@@ -207,24 +207,31 @@ var StringPool = (function () {
 		};
 
 		if (type.constructor === NativeType) {
-			var memory = this._memory;
-
-			List.prototype.get = function (index) {
-				var offset = index * type.stride;
-				return memory.view(offset)[type.viewGet]();
+			List.prototype.at = function (index) {
+				var offset = type.sizeof * index;
+				var view = this._memory.view(offset);
+				return {
+					get: function () {
+						var offset = index * type.stride;
+						return view[type.viewGet]();
+					},
+					set: function (value) {
+						var offset = index * type.stride;
+						view[type.viewSet](value);
+					},
+				};
 			};
 
-			List.prototype.set = function (index, value) {
-				var offset = index * type.stride;
-				memory.view(offset)[type.viewSet](value);
+		}
+		else if (type.constructor === StructType || type.constructor === ListType) {
+			List.prototype.at = function (index) {
+				var offset = type.sizeof * index;
+				var subMemory = this._memory.atOffset(index);
+				return new type.clazz(subMemory);
 			};
 		}
 		else {
-			List.prototype.at = function (index) {
-				var offset = type.sizeof * index;
-				var structMemory = this._memory.atOffset(index);
-				return new type.clazz(structMemory);
-			};
+			throw Error();
 		}
 
 		return List;
@@ -233,10 +240,10 @@ var StringPool = (function () {
 	var U32List = createListClass(Type.U32);
 
 	var Node = createStructClass({
-		AsciiChar: Type.U8,
-		ParentPtr: Type.U32,
-		KidCapacity: Type.U32,
-		KidsPtr: Type.U32,
+		asciiChar: Type.U8,
+		parentPtr: Type.U32,
+		kidCapacity: Type.U32,
+		kidsPtr: Type.U32,
 	});
 
 	var StringPool = function () {
@@ -253,10 +260,9 @@ var StringPool = (function () {
 		var node = this._allocator.dereference(pNode, Node);
 
 		node.aciiChar().set(c);
-		node.setAciiChar(c);
-		node.setParentPtr(pParent);
-		node.setKidCapacity(kidCapacity);
-		node.setKidsPtr(pKids);
+		node.parentPtr.set(pParent);
+		node.kidCapacity.set(kidCapacity);
+		node.kidsPtr.set(pKids);
 
 		var kids = this._allocator.dereference(pKids, U32List);
 		for (var i = 0; i < kidCapacity; ++i) {
